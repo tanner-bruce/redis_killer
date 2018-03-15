@@ -29,6 +29,10 @@
   name = "github.com/spf13/cobra"
   version = "0.0.1"
 
+[[constraint]]
+  name = "github.com/prometheus/client_golang"
+  revision = "c3324c1198cf3374996e9d3098edd46a6b55afc9"
+
 [prune]
   go-tests = true
   unused-packages = true
