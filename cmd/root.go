@@ -26,11 +26,16 @@ import (
 	"github.com/garyburd/redigo/redis"
 	"github.com/spf13/cobra"
 
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 )
 
 var (
 	host        string
+	addr        string
 	port        int
 	jobs        int
 	numRequests int
@@ -48,12 +53,23 @@ var rootCmd = &cobra.Command{
 }
 
 func run() {
+	srv := http.Server{Addr: addr}
+	http.Handle("/metrics", promhttp.Handler())
+
+	go func() {
+		log.Infoln("starting metrics server")
+		if err := srv.ListenAndServe(); err != nil {
+			log.WithError(err).Infoln("http metrics server shutting down")
+		}
+	}()
+
 	log.Infoln("Starting redis killer...")
 	// Handle signal interrupts nicely
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	defer func() {
+		srv.Shutdown(ctx)
 		signal.Stop(c)
 		cancel()
 	}()
@@ -61,6 +77,7 @@ func run() {
 	go func() {
 		select {
 		case <-c:
+			srv.Shutdown(ctx)
 			cancel()
 		case <-ctx.Done():
 		}
@@ -89,14 +106,33 @@ func run() {
 
 			count := 0
 			bs := make([]byte, valueSize)
+			down := false
+			var timer *prometheus.Timer
 			for ; count < numRequests/jobs; count++ {
+				t := prometheus.NewTimer(respTime)
 				select {
 				case <-c.Done():
 					goto DONE
 				default:
 				}
 				rand.Read(bs)
-				r.Do("SET", string(count*id), bs)
+				_, err := r.Do("SET", string(count*id), bs)
+				t.ObserveDuration()
+				if err != nil {
+					// if we weren't down, we need to start tracking
+					if !down {
+						down = true
+						timer = prometheus.NewTimer(downTime)
+					}
+					// retry
+					count--
+				} else {
+					if down {
+						timer.ObserveDuration()
+						log.Infoln("worker ", id, " observed downtime")
+						down = false
+					}
+				}
 			}
 		DONE:
 			log.Infof("worker (%d) finished. total requests: %d", id, count)
@@ -116,8 +152,27 @@ func Execute() {
 	}
 }
 
+var downTime = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:      "redis_down_time",
+	Namespace: "redis_killer",
+	Help:      "how long was redis down for",
+	Subsystem: "redis",
+	Buckets:   []float64{},
+})
+
+var respTime = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:      "redis_response_time",
+	Namespace: "redis_killer",
+	Help:      "redis response time",
+	Subsystem: "redis",
+	Buckets:   []float64{},
+})
+
 func init() {
+	prometheus.MustRegister(downTime, respTime)
+
 	rootCmd.Flags().StringVar(&host, "host", "127.0.0.1", "Redis host/ip")
+	rootCmd.Flags().StringVarP(&addr, "metrics-port", "m", ":9876", "Port to serve metrics on")
 	rootCmd.Flags().IntVarP(&port, "port", "p", 6379, "Redis port")
 	rootCmd.Flags().IntVarP(&jobs, "jobs", "j", 4, "Number of parallel jobs to run")
 	rootCmd.Flags().IntVarP(&numRequests, "requests", "r", -1, "Number of total requests to make. Set to -1 to run forever")
