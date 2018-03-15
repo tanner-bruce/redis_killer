@@ -89,6 +89,37 @@ func run() {
 
 	log.Infoln("Starting workers...")
 	var wg sync.WaitGroup
+
+	go func(c context.Context) {
+		wg.Add(1)
+		defer wg.Done()
+		var timer *prometheus.Timer
+		down := false
+		for {
+			select {
+			case <-c.Done():
+				return
+			default:
+			}
+
+			r, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", host, port))
+			if err != nil {
+				errCount.WithLabelValues("tester").Inc()
+				if !down {
+					down = true
+					timer = prometheus.NewTimer(downTime.WithLabelValues("tester"))
+				}
+			} else {
+				if down {
+					timer.ObserveDuration()
+					log.Infoln("tester observed downtime")
+					down = false
+				}
+			}
+			r.Close()
+		}
+	}(ctx)
+
 	for i := 0; i < jobs; i++ {
 		wg.Add(1)
 		go func(id int, c context.Context) {
@@ -106,8 +137,6 @@ func run() {
 
 			count := 0
 			bs := make([]byte, valueSize)
-			down := false
-			var timer *prometheus.Timer
 			for ; count < numRequests/jobs; count++ {
 				t := prometheus.NewTimer(respTime.WithLabelValues(string(id)))
 				select {
@@ -121,19 +150,6 @@ func run() {
 				t.ObserveDuration()
 				if err != nil {
 					errCount.WithLabelValues(string(id)).Inc()
-					// if we weren't down, we need to start tracking
-					if !down {
-						down = true
-						timer = prometheus.NewTimer(downTime.WithLabelValues(string(id)))
-					}
-					// retry
-					count--
-				} else {
-					if down {
-						timer.ObserveDuration()
-						log.Infoln("worker ", id, " observed downtime")
-						down = false
-					}
 				}
 			}
 		DONE:
