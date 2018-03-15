@@ -109,7 +109,7 @@ func run() {
 			down := false
 			var timer *prometheus.Timer
 			for ; count < numRequests/jobs; count++ {
-				t := prometheus.NewTimer(respTime)
+				t := prometheus.NewTimer(respTime.WithLabelValues(string(id)))
 				select {
 				case <-c.Done():
 					goto DONE
@@ -117,12 +117,14 @@ func run() {
 				}
 				rand.Read(bs)
 				_, err := r.Do("SET", string(count*id), bs)
+				setCount.WithLabelValues(string(id)).Inc()
 				t.ObserveDuration()
 				if err != nil {
+					errCount.WithLabelValues(string(id)).Inc()
 					// if we weren't down, we need to start tracking
 					if !down {
 						down = true
-						timer = prometheus.NewTimer(downTime)
+						timer = prometheus.NewTimer(downTime.WithLabelValues(string(id)))
 					}
 					// retry
 					count--
@@ -152,24 +154,42 @@ func Execute() {
 	}
 }
 
-var downTime = prometheus.NewHistogram(prometheus.HistogramOpts{
+var downTime = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Name:      "redis_down_time",
 	Namespace: "redis_killer",
 	Help:      "how long was redis down for",
 	Subsystem: "redis",
 	Buckets:   []float64{},
-})
+},
+	[]string{"worker_id"})
 
-var respTime = prometheus.NewHistogram(prometheus.HistogramOpts{
+var respTime = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Name:      "redis_response_time",
 	Namespace: "redis_killer",
 	Help:      "redis response time",
 	Subsystem: "redis",
 	Buckets:   []float64{},
-})
+},
+	[]string{"worker_id"})
+
+var setCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name:      "redis_set_total",
+	Namespace: "redis_killer",
+	Help:      "number of SETs made to redis",
+	Subsystem: "redis",
+},
+	[]string{"worker_id"})
+
+var errCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name:      "redis_error_response_total",
+	Namespace: "redis_killer",
+	Help:      "number of errors counted during SETs made to redis",
+	Subsystem: "redis",
+},
+	[]string{"worker_id"})
 
 func init() {
-	prometheus.MustRegister(downTime, respTime)
+	prometheus.MustRegister(downTime, respTime, setCount, errCount)
 
 	rootCmd.Flags().StringVar(&host, "host", "127.0.0.1", "Redis host/ip")
 	rootCmd.Flags().StringVarP(&addr, "metrics-port", "m", ":9876", "Port to serve metrics on")
