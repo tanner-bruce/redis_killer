@@ -115,8 +115,8 @@ func run() {
 					log.Infoln("tester observed downtime")
 					down = false
 				}
+				r.Close()
 			}
-			r.Close()
 		}
 	}(ctx)
 

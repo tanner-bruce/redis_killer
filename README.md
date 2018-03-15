@@ -8,7 +8,7 @@ Small app that constantly sets new keys in redis. Useful for stress testing redi
 ```
 docker build -t redis-killer .
 docker run -it redis-killer -h
-docker run -it redis-killer -j 4 --size 1024 --host redis -p 6379
+docker run -it redis-killer -j 4 --size 1024 --host redis -p 6379 -m :9876
 ```
 
 
@@ -19,3 +19,4 @@ docker run -it redis-killer -j 4 --size 1024 --host redis -p 6379
 * `-p, --port`, - port to use to connect to redis [default: 6379]
 * `-r, --requests` - total number of requests to make across all workers
 * `-s, --size` - number of bytes to set on they key per request
+* `-m, --metrics-port` - address to listen on for prometheus metrics server
