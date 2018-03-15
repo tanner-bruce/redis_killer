@@ -17,9 +17,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 
 	"github.com/garyburd/redigo/redis"
 	"github.com/spf13/cobra"
@@ -32,6 +34,7 @@ var (
 	port        int
 	jobs        int
 	numRequests int
+	valueSize   int
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -45,10 +48,11 @@ var rootCmd = &cobra.Command{
 }
 
 func run() {
+	log.Infoln("Starting redis killer...")
 	// Handle signal interrupts nicely
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	defer func() {
 		signal.Stop(c)
 		cancel()
@@ -62,35 +66,39 @@ func run() {
 		}
 	}()
 
-	// Connect to redis
-	r, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", host, port))
-	if err != nil {
-		log.WithError(err).Errorln("could not connect to redis")
-		os.Exit(1)
-	}
-	defer r.Close()
-
 	if numRequests < 0 {
 		numRequests = 10000000000 // im gonna kill u!!!
 	}
 
+	log.Infoln("Starting workers...")
 	var wg sync.WaitGroup
 	for i := 0; i < jobs; i++ {
+		wg.Add(1)
 		go func(id int, c context.Context) {
-			wg.Add(1)
+			log.Infoln("Connecting to redis...")
+			// Connect to redis
+			r, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", host, port))
+			if err != nil {
+				log.WithError(err).Errorln("could not connect to redis")
+				os.Exit(1)
+			}
+			defer r.Close()
+
+			log.Infoln("starting worker... id: ", id)
 			defer wg.Done()
 
 			count := 0
+			bs := make([]byte, valueSize)
 			for ; count < numRequests/jobs; count++ {
 				select {
 				case <-c.Done():
-					return
+					goto DONE
 				default:
 				}
-
-				r.Do("SET", string(count*id), count)
+				rand.Read(bs)
+				r.Do("SET", string(count*id), bs)
 			}
-
+		DONE:
 			log.Infof("worker (%d) finished. total requests: %d", id, count)
 		}(i, ctx)
 	}
@@ -109,8 +117,9 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Flags().StringVarP(&host, "host", "h", "127.0.0.1", "Redis host/ip")
+	rootCmd.Flags().StringVar(&host, "host", "127.0.0.1", "Redis host/ip")
 	rootCmd.Flags().IntVarP(&port, "port", "p", 6379, "Redis port")
 	rootCmd.Flags().IntVarP(&jobs, "jobs", "j", 4, "Number of parallel jobs to run")
 	rootCmd.Flags().IntVarP(&numRequests, "requests", "r", -1, "Number of total requests to make. Set to -1 to run forever")
+	rootCmd.Flags().IntVarP(&valueSize, "size", "s", -1, "Number of bytes to use for the values inserted. Set to -1 for random")
 }
